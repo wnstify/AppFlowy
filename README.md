@@ -178,6 +178,23 @@ appflowy/
   admin-frontend-app/         # Admin frontend app (extracted from image)
 ```
 
+## Supporting AppFlowy
+
+This project exists because the [AppFlowy](https://appflowy.com) team built an incredible open-source collaboration platform and made it available to everyone. AppFlowy Cloud, the backend powering real-time collaboration, is fully open-source under AGPL-3.0 — a genuine commitment to the open-source community.
+
+If you find AppFlowy valuable, the best way to support the project and its continued development is through their official offerings:
+
+- **[AppFlowy Cloud](https://appflowy.com/pricing)** — Managed SaaS with a generous free tier, Pro plan ($10/month) with unlimited storage and AI features, and team plans. Zero infrastructure to manage.
+- **[Self-Hosted Licenses](https://appflowy.com/pricing)** — For organizations that need self-hosted deployments with official support, SLAs, and enterprise features.
+- **[Star the project on GitHub](https://github.com/AppFlowy-IO/AppFlowy)** — Stars help increase visibility and attract contributors.
+- **[Contribute upstream](https://github.com/AppFlowy-IO/AppFlowy-Cloud)** — Bug reports, feature requests, and pull requests to the official AppFlowy Cloud repository directly benefit everyone.
+
+This hardened deployment wrapper is a community project. The real work — building the collaboration engine, the editor, the mobile apps, the AI features — is done by the AppFlowy team. Please support them.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this project.
+
 ## License
 
 This project provides Docker Compose configuration for AppFlowy Cloud. AppFlowy Cloud is licensed under [AGPL-3.0](https://github.com/AppFlowy-IO/AppFlowy-Cloud/blob/main/LICENSE).
