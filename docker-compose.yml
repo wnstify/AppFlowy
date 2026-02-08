@@ -1,0 +1,541 @@
+# =============================================================================
+# AppFlowy Cloud - Security-Hardened Docker Compose
+# =============================================================================
+# ALL services run as your host user - no root containers.
+# Default: user 1000:1000. If your UID/GID differs, see INSTALLATION.md Step 2.
+# Single exposed port: 127.0.0.1:8025 (Angie internal reverse proxy)
+#
+# Pre-deployment:
+#   mkdir -p postgres-data dragonfly-data minio-data
+#   chown -R $(id -u):$(id -g) postgres-data dragonfly-data minio-data
+#   cp .env.example .env && chmod 600 .env
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 18 + pgvector
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg18@sha256:3c37093adf11a0b7188081df5b6af115a5c096a694021b4114e8e352d2e85d97
+    container_name: appflowy-postgres
+    user: "1000:1000"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      PGPORT: ${POSTGRES_PORT:-5432}
+    command: ["postgres", "-c", "port=${POSTGRES_PORT:-5432}"]
+    volumes:
+      - ./postgres-data:/var/lib/postgresql
+    networks:
+      - appflowy-database
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}", "-p", "${POSTGRES_PORT:-5432}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+      - /run/postgresql:size=16M,uid=1000,gid=1000
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4"
+          pids: 200
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+
+  # ---------------------------------------------------------------------------
+  # Dragonfly (Redis-compatible cache, password-protected)
+  # ---------------------------------------------------------------------------
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.36.0@sha256:af221b68138afb0b0238401c335493cfc2b060d577c5d6c018ddf6a29d3119f9
+    container_name: appflowy-dragonfly
+    user: "1000:1000"
+    command:
+      - --requirepass=${DRAGONFLY_PASSWORD}
+      - --maxmemory=1536mb
+      - --logtostdout
+      - --dir=/data
+      - --proactor_threads=2
+    volumes:
+      - ./dragonfly-data:/data
+    networks:
+      - appflowy-cache
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'AUTH %s\\r\\nPING\\r\\n' \"$$DRAGONFLY_PASSWORD\" | nc localhost 6379 | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    environment:
+      DRAGONFLY_PASSWORD: ${DRAGONFLY_PASSWORD}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+          pids: 100
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible object storage)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    container_name: appflowy-minio
+    user: "1000:1000"
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./minio-data:/data
+    networks:
+      - appflowy-storage
+      - appflowy-frontend
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+          pids: 150
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # GoTrue (authentication)
+  # ---------------------------------------------------------------------------
+  gotrue:
+    image: appflowyinc/gotrue:0.12.0@sha256:306c5d6b40aa595111d6b729c96aa5a260b1a525a3e46b1d8be0462cbc07db80
+    container_name: appflowy-gotrue
+    user: "1000:1000"
+    environment:
+      # Database
+      GOTRUE_DB_DRIVER: postgres
+      DATABASE_URL: ${GOTRUE_DATABASE_URL}
+      PORT: 9999
+      # JWT
+      GOTRUE_JWT_SECRET: ${GOTRUE_JWT_SECRET}
+      GOTRUE_JWT_EXP: ${GOTRUE_JWT_EXP}
+      GOTRUE_JWT_ADMIN_GROUP_NAME: supabase_admin
+      # Site / URI
+      GOTRUE_SITE_URL: appflowy-flutter://
+      GOTRUE_URI_ALLOW_LIST: "**"
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      # Admin
+      GOTRUE_ADMIN_EMAIL: ${GOTRUE_ADMIN_EMAIL}
+      GOTRUE_ADMIN_PASSWORD: ${GOTRUE_ADMIN_PASSWORD}
+      # Signup
+      GOTRUE_DISABLE_SIGNUP: ${GOTRUE_DISABLE_SIGNUP}
+      GOTRUE_MAILER_AUTOCONFIRM: ${GOTRUE_MAILER_AUTOCONFIRM}
+      GOTRUE_RATE_LIMIT_EMAIL_SENT: ${GOTRUE_RATE_LIMIT_EMAIL_SENT:-100}
+      # Mailer URL paths
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /gotrue/verify
+      GOTRUE_MAILER_URLPATHS_INVITE: /gotrue/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /gotrue/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /gotrue/verify
+      # SMTP
+      GOTRUE_SMTP_HOST: ${GOTRUE_SMTP_HOST}
+      GOTRUE_SMTP_PORT: ${GOTRUE_SMTP_PORT}
+      GOTRUE_SMTP_USER: ${GOTRUE_SMTP_USER}
+      GOTRUE_SMTP_PASS: ${GOTRUE_SMTP_PASS}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${GOTRUE_SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_MAX_FREQUENCY: 1ns
+      # OAuth (disabled by default)
+      GOTRUE_EXTERNAL_GOOGLE_ENABLED: ${GOTRUE_EXTERNAL_GOOGLE_ENABLED:-false}
+      GOTRUE_EXTERNAL_GITHUB_ENABLED: ${GOTRUE_EXTERNAL_GITHUB_ENABLED:-false}
+      GOTRUE_EXTERNAL_DISCORD_ENABLED: ${GOTRUE_EXTERNAL_DISCORD_ENABLED:-false}
+    networks:
+      - appflowy-database
+      - appflowy-frontend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:9999/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "2"
+          pids: 100
+        reservations:
+          memory: 64M
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # AppFlowy Cloud (backend API + WebSocket)
+  # ---------------------------------------------------------------------------
+  appflowy_cloud:
+    image: appflowyinc/appflowy_cloud:0.12.0@sha256:d8c82089cc51115dea3f148278acd240a19cca5050d5868862b74a2ab04f00ec
+    container_name: appflowy-cloud
+    user: "1000:1000"
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      APPFLOWY_ENVIRONMENT: production
+      # Database
+      APPFLOWY_DATABASE_URL: ${APPFLOWY_DATABASE_URL}
+      APPFLOWY_DATABASE_MAX_CONNECTIONS: ${APPFLOWY_DATABASE_MAX_CONNECTIONS}
+      # Redis (Dragonfly)
+      APPFLOWY_REDIS_URI: ${APPFLOWY_REDIS_URI}
+      # GoTrue
+      APPFLOWY_GOTRUE_BASE_URL: ${APPFLOWY_GOTRUE_BASE_URL}
+      APPFLOWY_GOTRUE_JWT_SECRET: ${GOTRUE_JWT_SECRET}
+      # S3 / MinIO
+      APPFLOWY_S3_USE_MINIO: ${APPFLOWY_S3_USE_MINIO}
+      APPFLOWY_S3_MINIO_URL: ${APPFLOWY_S3_MINIO_URL}
+      APPFLOWY_S3_CREATE_BUCKET: ${APPFLOWY_S3_CREATE_BUCKET}
+      APPFLOWY_S3_ACCESS_KEY: ${APPFLOWY_S3_ACCESS_KEY}
+      APPFLOWY_S3_SECRET_KEY: ${APPFLOWY_S3_SECRET_KEY}
+      APPFLOWY_S3_BUCKET: ${APPFLOWY_S3_BUCKET}
+      APPFLOWY_S3_REGION: ${APPFLOWY_S3_REGION}
+      APPFLOWY_S3_PRESIGNED_URL_ENDPOINT: ${APPFLOWY_S3_PRESIGNED_URL_ENDPOINT}
+      # SMTP
+      APPFLOWY_MAILER_SMTP_HOST: ${APPFLOWY_MAILER_SMTP_HOST}
+      APPFLOWY_MAILER_SMTP_PORT: ${APPFLOWY_MAILER_SMTP_PORT}
+      APPFLOWY_MAILER_SMTP_USERNAME: ${APPFLOWY_MAILER_SMTP_USERNAME}
+      APPFLOWY_MAILER_SMTP_EMAIL: ${APPFLOWY_MAILER_SMTP_EMAIL}
+      APPFLOWY_MAILER_SMTP_PASSWORD: ${APPFLOWY_MAILER_SMTP_PASSWORD}
+      APPFLOWY_MAILER_SMTP_TLS_KIND: ${APPFLOWY_MAILER_SMTP_TLS_KIND}
+      # Access control
+      APPFLOWY_ACCESS_CONTROL: ${APPFLOWY_ACCESS_CONTROL}
+      APPFLOWY_WEBSOCKET_MAILBOX_SIZE: ${APPFLOWY_WEBSOCKET_MAILBOX_SIZE:-6000}
+      # URLs
+      APPFLOWY_WEB_URL: ${APPFLOWY_WEB_URL}
+      APPFLOWY_BASE_URL: ${APPFLOWY_BASE_URL}
+    networks:
+      - appflowy-database
+      - appflowy-cache
+      - appflowy-storage
+      - appflowy-frontend
+    depends_on:
+      gotrue:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:8000/api/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4"
+          pids: 300
+        reservations:
+          memory: 256M
+          cpus: "0.5"
+
+  # ---------------------------------------------------------------------------
+  # AppFlowy Worker (background tasks)
+  # ---------------------------------------------------------------------------
+  appflowy_worker:
+    image: appflowyinc/appflowy_worker:0.12.0@sha256:eca5db527c5a15b1d0e860f1807d9b9431f5b0149677c29d3fa233fcedd58507
+    container_name: appflowy-worker
+    user: "1000:1000"
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      APPFLOWY_ENVIRONMENT: production
+      APPFLOWY_WORKER_ENVIRONMENT: production
+      APPFLOWY_WORKER_REDIS_URL: ${APPFLOWY_WORKER_REDIS_URL}
+      APPFLOWY_WORKER_DATABASE_URL: ${APPFLOWY_WORKER_DATABASE_URL}
+      APPFLOWY_WORKER_DATABASE_NAME: ${APPFLOWY_WORKER_DATABASE_NAME}
+      APPFLOWY_WORKER_IMPORT_TICK_INTERVAL: 30
+      # S3 / MinIO
+      APPFLOWY_S3_USE_MINIO: ${APPFLOWY_S3_USE_MINIO}
+      APPFLOWY_S3_MINIO_URL: ${APPFLOWY_S3_MINIO_URL}
+      APPFLOWY_S3_ACCESS_KEY: ${APPFLOWY_S3_ACCESS_KEY}
+      APPFLOWY_S3_SECRET_KEY: ${APPFLOWY_S3_SECRET_KEY}
+      APPFLOWY_S3_BUCKET: ${APPFLOWY_S3_BUCKET}
+      APPFLOWY_S3_REGION: ${APPFLOWY_S3_REGION}
+      # SMTP
+      APPFLOWY_MAILER_SMTP_HOST: ${APPFLOWY_MAILER_SMTP_HOST}
+      APPFLOWY_MAILER_SMTP_PORT: ${APPFLOWY_MAILER_SMTP_PORT}
+      APPFLOWY_MAILER_SMTP_USERNAME: ${APPFLOWY_MAILER_SMTP_USERNAME}
+      APPFLOWY_MAILER_SMTP_EMAIL: ${APPFLOWY_MAILER_SMTP_EMAIL}
+      APPFLOWY_MAILER_SMTP_PASSWORD: ${APPFLOWY_MAILER_SMTP_PASSWORD}
+      APPFLOWY_MAILER_SMTP_TLS_KIND: ${APPFLOWY_MAILER_SMTP_TLS_KIND}
+    networks:
+      - appflowy-database
+      - appflowy-cache
+      - appflowy-storage
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+          pids: 200
+        reservations:
+          memory: 128M
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # AppFlowy Web (web UI) - custom nginx.conf for non-root operation
+  # ---------------------------------------------------------------------------
+  appflowy_web:
+    image: appflowyinc/appflowy_web:0.10.5@sha256:c519ac5b95624647b34a1bc14d26586f3dc2f8309ce547ad61cbce7d118f43e9
+    container_name: appflowy-web
+    user: "1000:1000"
+    environment:
+      APPFLOWY_BASE_URL: ${APPFLOWY_BASE_URL}
+      APPFLOWY_GOTRUE_BASE_URL: ${APPFLOWY_BASE_URL}/gotrue
+      APPFLOWY_WS_BASE_URL: ${APPFLOWY_WEBSOCKET_BASE_URL}
+    volumes:
+      - ./appflowy-web/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./appflowy-web-html:/usr/share/nginx/html
+      - ./appflowy-web-dist:/app/dist
+    networks:
+      - appflowy-frontend
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+      - /var/log/nginx:size=64M,uid=1000,gid=1000
+      - /var/log/supervisor:size=16M,uid=1000,gid=1000
+      - /var/run:size=16M,uid=1000,gid=1000
+      - /var/cache/nginx:size=64M,uid=1000,gid=1000
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "2"
+          pids: 100
+        reservations:
+          memory: 64M
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # Admin Frontend (admin dashboard)
+  # ---------------------------------------------------------------------------
+  admin_frontend:
+    image: appflowyinc/admin_frontend:0.12.0@sha256:592bd5400d841a8dc10300bd0a81912ea90480dc42374a28c05dd256fb6c50e9
+    container_name: appflowy-admin
+    user: "1000:1000"
+    environment:
+      APPFLOWY_GOTRUE_BASE_URL: ${APPFLOWY_BASE_URL}/gotrue
+      APPFLOWY_BASE_URL: ${APPFLOWY_BASE_URL}
+    volumes:
+      - ./admin-frontend-app:/app
+    networks:
+      - appflowy-frontend
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "2"
+          pids: 100
+        reservations:
+          memory: 64M
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # Angie (internal reverse proxy, nginx-compatible)
+  # ---------------------------------------------------------------------------
+  angie:
+    image: docker.angie.software/angie:1.11.3-alpine@sha256:1dab21d9311c3a2d97e90276a69fe94218c3f3cf1bf9696ea0dbc093dd93fc44
+    container_name: appflowy-angie
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8025:80"
+    volumes:
+      - ./angie/angie.conf:/etc/angie/angie.conf:ro
+    networks:
+      - appflowy-frontend
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+      appflowy_web:
+        condition: service_started
+      gotrue:
+        condition: service_healthy
+      admin_frontend:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:size=256M,uid=1000,gid=1000
+      - /var/cache/angie:size=128M,uid=1000,gid=1000
+      - /var/log/angie:size=64M,uid=1000,gid=1000
+      - /run:size=16M,uid=1000,gid=1000
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:80/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "2"
+          pids: 100
+        reservations:
+          memory: 32M
+          cpus: "0.25"
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  appflowy-frontend:
+    driver: bridge
+
+  appflowy-database:
+    driver: bridge
+    internal: true
+
+  appflowy-cache:
+    driver: bridge
+    internal: true
+
+  appflowy-storage:
+    driver: bridge
+    internal: true

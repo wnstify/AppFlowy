@@ -1,0 +1,8 @@
+.env
+.claude
+postgres-data/
+dragonfly-data/
+minio-data/
+appflowy-web-html/
+appflowy-web-dist/
+admin-frontend-app/
