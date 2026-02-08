@@ -2,6 +2,12 @@
 
 A production-ready, security-hardened self-hosted [AppFlowy Cloud](https://github.com/AppFlowy-IO/AppFlowy-Cloud) deployment with Docker Compose.
 
+## Watch Video
+
+[![AppFlowy Cloud Security-Hardened Docker Compose](https://img.youtube.com/vi/kq1apUNmmfY/mqdefault.jpg)](https://youtube.com/watch?v=kq1apUNmmfY)
+
+**[AppFlowy Cloud Security-Hardened Docker Compose](videos/2026/appflowy-cloud-security-hardened-docker-compose)** - [Watch on YouTube](https://youtube.com/watch?v=kq1apUNmmfY)
+
 ## What is this?
 
 This project wraps the official AppFlowy Cloud Docker images with comprehensive security hardening, network isolation, non-root container execution, and supply chain protections. It is designed to sit behind a reverse proxy (such as [Pangolin](https://github.com/fosrl/pangolin), Traefik, Caddy, or nginx) that handles TLS termination.
